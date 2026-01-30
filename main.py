@@ -1,5 +1,11 @@
 import math
+from datasets import load_dataset
 from dataset import get_llm_probabilities,label_map
+import random
+import matplotlib.pyplot as plt
+
+dataset = load_dataset("glue", "sst2")
+val_data = dataset["validation"]
 
 def fairnessScore(prompt_example):
     dummy_input = "N/A" 
@@ -68,6 +74,30 @@ def GFairPrompting(training_examples):
 
     return selected
 
+def build_prompt(demos, sentence):
+    return "\n".join(demos) + f"\nReview: {sentence}\nLabel:"
+
+def predict_label(prompt):
+    probs = get_llm_probabilities(prompt, label_map)
+    labels = list(label_map.keys())
+    return labels[probs.index(max(probs))]
+
+def evaluate_prompt(demos, data, num_samples=50):
+    correct = 0
+    for i in range(num_samples):
+        sentence = data[i]["sentence"]
+        true_label = "Positive" if data[i]["label"] == 1 else "Negative"
+        prompt = build_prompt(demos, sentence)
+        pred = predict_label(prompt)
+        if pred == true_label:
+            correct += 1
+    return correct / num_samples
+
+def random_prompt(examples, k):
+    return random.sample(examples, k)
+
+
+# Example usage
 examples = [
     "Review: This movie was terrible.\nLabel:",
     "Review: I absolutely loved this film.\nLabel:",
@@ -81,3 +111,32 @@ print("T-Fair:", t_selected)
 print("\nRunning G-Fair Selection...")
 g_selected = GFairPrompting(examples)
 print("G-Fair:", g_selected)
+
+random_demos = random_prompt(examples, 2)
+
+results = []
+
+for name, demos in [
+    ("Random", random_demos),
+    ("T-Fair", t_selected),
+    ("G-Fair", g_selected),
+]:
+    fairness = fairnessScore("\n".join(demos))
+    accuracy = evaluate_prompt(demos, val_data, num_samples=50)
+    results.append((name, fairness, accuracy))
+    print(f"{name} -> Fairness: {fairness:.4f}, Accuracy: {accuracy:.3f}")
+
+x = [r[1] for r in results]
+y = [r[2] for r in results]
+labels = [r[0] for r in results]
+
+plt.figure()
+plt.scatter(x, y)
+
+for i, label in enumerate(labels):
+    plt.annotate(label, (x[i], y[i]))
+
+plt.xlabel("Fairness (Entropy)")
+plt.ylabel("Accuracy")
+plt.title("Fairness vs Accuracy (T-fair vs G-fair)")
+plt.show()
