@@ -26,8 +26,8 @@ test_data = split["test"]
 # ----------------------------
 # Convert structured data to text
 # ----------------------------
-def format_example(row):
-    return (
+def format_example(row, include_label=False):
+    base = (
         f"Age: {row['age']}, "
         f"Workclass: {row['workclass']}, "
         f"Education: {row['education']}, "
@@ -39,9 +39,14 @@ def format_example(row):
         f"Hours per week: {row['hours.per.week']}\n"
         "Income:"
     )
+    if include_label:
+        label = row["income"]
+        return base + " " + label
+    return base
 
 def label_to_word(label):
-    return "Positive" if label == 1 else "Negative"
+    # label is either '>50K' or '<=50K'
+    return "Positive" if label == ">50K" else "Negative"
 
 # ----------------------------
 # Build candidate demonstrations
@@ -49,7 +54,7 @@ def label_to_word(label):
 candidates = []
 for i in range(100):
     row = train_data[i]
-    text = format_example(row)
+    text = format_example(row, include_label=True)
     candidates.append(text)
 
 # ----------------------------
@@ -58,7 +63,7 @@ for i in range(100):
 def fairnessScore(prompt_example):
     dummy_input = "N/A"
     full_input = f"{prompt_example}\nInput: {dummy_input}\nIncome:"
-    probs = get_llm_probabilities(full_input, label_map)
+    probs = get_llm_probabilities(full_input)
     return -sum(p * math.log(p + EPS) for p in probs)
 
 # ----------------------------
@@ -108,12 +113,14 @@ def GFairPrompting(training_examples):
 # ----------------------------
 def build_prompt(demos, row):
     base = "\n".join(demos)
-    return base + "\n" + format_example(row)
+    return base + "\n" + format_example(row, include_label=False)
 
 def predict_label(prompt):
-    probs = get_llm_probabilities(prompt, label_map)
-    labels = list(label_map.keys())
-    return labels[probs.index(max(probs))]
+    probs = get_llm_probabilities(prompt)
+    # probs are in the order of label_map.values(), so we need to match that order
+    label_order = [word for word, _ in sorted(label_map.items(), key=lambda x: x[1])]
+    best_idx = probs.index(max(probs))
+    return label_order[best_idx]
 
 def evaluate_prompt(demos, data):
     correct = 0
