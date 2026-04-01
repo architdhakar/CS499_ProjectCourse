@@ -51,7 +51,8 @@ def load_adult():
         )
 
     def label_fn(row):
-        return "Positive" if row["income"] == 1 else "Negative"
+        # Income is a string: ">50K" or "<=50K"
+        return "Positive" if row["income"] == ">50K" else "Negative"
 
     return split["train"], split["test"], formatter, label_fn
 
