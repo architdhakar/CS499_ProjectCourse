@@ -53,13 +53,13 @@ def load_credit():
         def formatter(row):
             return (
                 f"Limit Balance: {row['limit_bal']}, "
-                f"Sex: {row['sex']}, "
-                f"Education: {row['education']}, "
-                f"Marriage: {row['marriage']}, "
-                f"Age: {row['age']}, "
-                f"History 1: {row['pay_0']}, "
-                f"Bill Amount 1: {row['bill_amt1']}, "
-                f"Pay Amount 1: {row['pay_amt1']}\nDefault:"
+                f"Sex: {row['sex'] if 'sex' in row else row.get('SEX', 'Unknown')}, "
+                f"Education: {row['education'] if 'education' in row else row.get('EDUCATION', 'Unknown')}, "
+                f"Marriage: {row['marriage'] if 'marriage' in row else row.get('MARRIAGE', 'Unknown')}, "
+                f"Age: {row['age'] if 'age' in row else row.get('AGE', 'Unknown')}, "
+                f"History 1: {row['pay_0'] if 'pay_0' in row else row.get('PAY_0', 'Unknown')}, "
+                f"Bill Amount 1: {row['bill_amt1'] if 'bill_amt1' in row else row.get('BILL_AMT1', 'Unknown')}, "
+                f"Pay Amount 1: {row['pay_amt1'] if 'pay_amt1' in row else row.get('PAY_AMT1', 'Unknown')}\nDefault:"
             )
 
         def label_fn(row):
