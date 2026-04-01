@@ -353,3 +353,38 @@ Trade-off Summary:
     ✓ Accuracy: +6%
     = WIN-WIN situation!
 ```
+
+# Fairness via Clustering-Genetic (FCG) Algorithm
+
+**FCG stands for: Fairness via Clustering-Genetic Algorithm.**
+
+The FCG algorithm is designed to select the most effective and fair "demonstration examples" (few-shot context) for a Large Language Model (LLM) when predicting tabular data. Its goal is to maximize both prediction accuracy and fairness across different demographics (e.g., men vs. women).
+
+Here are the concise steps of how the FCG algorithm works:
+
+### Step 1: Data Stratification
+The training dataset is divided into 4 distinct subgroups based on a sensitive attribute (e.g., Female/Male) and the target label (e.g., High Income/Low Income). 
+- Subgroup 1: Minority + Negative Label
+- Subgroup 2: Minority + Positive Label
+- Subgroup 3: Majority + Negative Label
+- Subgroup 4: Majority + Positive Label
+
+### Step 2: Diverse Clustering
+To ensure the selected examples cover a wide variety of scenarios (diversity), the algorithm applies **K-Means Clustering** to the numerical features of each of the 4 subgroups. 
+- It identifies `N` cluster centers (distinct types of people) for each subgroup.
+- It selects `M` candidates closest to each cluster center.
+- **Result:** A massive dataset is shrunk down to a small, highly diverse pool of candidate examples.
+
+### Step 3: Genetic Evolution (Scoring)
+The algorithm tests how well these candidate examples actually guide the LLM. It uses a **Genetic Algorithm** (iterative survival of the fittest) to score them:
+1. It randomly selects a mix of candidates to form a prompt.
+2. It feeds this prompt to the LLM and asks it to predict a small verification dataset (Validation Set).
+3. It calculates two scores: **Prediction Score** (Accuracy) and **Fairness Score** (Equalized Odds).
+4. These scores are combined into a single **EvolScore** (Evolution Score). 
+5. Candidates that consistently result in high accuracy and high fairness get their scores boosted. The process repeats, using roulette-wheel selection to naturally favor higher-scoring candidates in subsequent rounds.
+
+### Step 4: Final Demonstration Selection
+After the scores settle, the algorithm ranks the candidates in each subgroup from highest to lowest `EvolScore`. 
+Depending on the chosen strategy (e.g., Strategy S2: prioritize minority samples), it simply picks the top `K` highest-scoring examples from the relevant subgroups to form the final, optimal prompt for the LLM.
+
+**Why it works:** Instead of randomly guessing which examples make an LLM fair and accurate, FCG filters for diversity (Clustering) and mathematically proves which examples work best (Genetic Evolution) before making its final choice.
