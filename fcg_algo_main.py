@@ -22,9 +22,18 @@ np.random.seed(RANDOM_SEED)
 
 # --- 1. DATA PREPARATION & STRATIFICATION ---
 
-def prepare_data():
-    """Load and prepare adult income dataset"""
-    train_dataset, test_dataset, formatter, label_fn = load_adult_dataset()
+def prepare_data(dataset_name="adult"):
+    """Load and prepare demographic/tabular dataset depending on name"""
+    if dataset_name == "adult":
+        from dataset import load_adult as load_dataset
+        # For Adult: sensitive_attr_name = "sex", minority="Female", majority="Male"
+    elif dataset_name == "credit":
+        from dataset import load_credit as load_dataset
+        # Credit uses "sex" assuming 2 as Female (minority typically for these datasets) and 1 as Male (majority)
+    else:
+        raise ValueError(f"Dataset {dataset_name} is not supported or defined.")
+        
+    train_dataset, test_dataset, formatter, label_fn = load_dataset()
     
     # Convert datasets to lists
     train_data = [train_dataset[i] for i in range(len(train_dataset))]
@@ -33,7 +42,7 @@ def prepare_data():
     return train_data, test_data, formatter, label_fn
 
 
-def stratify_by_groups(data, label_fn, sensitive_attr_name="sex"):
+def stratify_by_groups(data, label_fn, sensitive_attr_name="sex", dataset_name="adult"):
     """
     Stratify data into 4 subgroups based on sensitive attribute and label.
     
@@ -50,16 +59,25 @@ def stratify_by_groups(data, label_fn, sensitive_attr_name="sex"):
     """
     subgroups = {(0, 0): [], (0, 1): [], (1, 0): [], (1, 1): []}
     
-    for row in data:
+    for i, row in enumerate(data):
         # Get sensitive attribute (0=minority, 1=majority)
-        # For Adult: female=minority, male=majority
-        z = 1 if row.get(sensitive_attr_name) == "Male" else 0
+        if dataset_name == "adult":
+            z = 1 if row.get(sensitive_attr_name) == "Male" else 0
+        elif dataset_name == "credit":
+             # Assuming 1 is male, 2 is female in credit dataset 
+             z = 1 if str(row.get(sensitive_attr_name, "")) == "1" else 0
+        else:
+             z = 1 # default
         
         # Get label using label_fn (0=negative, 1=positive)
         label = label_fn(row)
         y = 1 if label == "Positive" else 0
         
         subgroups[(z, y)].append(row)
+        
+        # Add a debug print for the first few samples to cross verify
+        if i < 5:
+            print(f"[DEBUG Stratification] Row {i}: original sensitive='{row.get(sensitive_attr_name)}' -> z={z}, original label_fn='{label}' -> y={y}")
     
     return subgroups
 
@@ -291,7 +309,7 @@ class FCGAlgorithm:
         self.subgroup_scores = {}
         self.selected_demos = {}
     
-    def step1_clustering(self):
+    def step1_clustering(self, dataset_name="adult"):
         """
         Step 1: Diverse Clustering
         Reduce candidate pool while maintaining diversity.
@@ -299,7 +317,7 @@ class FCGAlgorithm:
         print("\n=== STEP 1: DIVERSE CLUSTERING ===")
         
         # Stratify data using label_fn
-        sg = stratify_by_groups(self.train_data, self.label_fn)
+        sg = stratify_by_groups(self.train_data, self.label_fn, dataset_name=dataset_name)
         
         # Cluster each subgroup
         for (z, y), subgroup in sg.items():
@@ -308,6 +326,10 @@ class FCGAlgorithm:
             if len(subgroup) == 0:
                 self.subgroups[(z, y)] = []
                 continue
+            
+            # Print sample to verify the content in subgroup
+            print(f"[DEBUG] Sample 1 from subgroup (z={z}, y={y}):")
+            print(f"        {self.formatter(subgroup[0]).replace(chr(10), ' | ')}")
             
             # Convert to feature vectors for clustering
             # Use embedding-based or simple feature extraction
@@ -450,12 +472,19 @@ class FCGAlgorithm:
 # --- 4. MAIN EXECUTION ---
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="FCG Algorithm Tests")
+    parser.add_argument("--dataset", type=str, default="adult", choices=["adult", "credit"], help="Dataset to use")
+    args = parser.parse_args()
+    
+    dataset_to_use = args.dataset
+    
     print("="*60)
-    print("FCG ALGORITHM - Fairness via Clustering-Genetic")
+    print(f"FCG ALGORITHM - Fairness via Clustering-Genetic [{dataset_to_use.upper()}]")
     print("="*60)
     
     print("\nLoading data...")
-    train_data, test_data, formatter, label_fn = prepare_data()
+    train_data, test_data, formatter, label_fn = prepare_data(dataset_to_use)
     
     # Split train data into train/val (30% train, 70% val from labeled data)
     split_idx = int(len(train_data) * 0.3)
@@ -486,7 +515,7 @@ if __name__ == "__main__":
     print("RUNNING FCG ALGORITHM")
     print("="*60)
     
-    fcg.step1_clustering()
+    fcg.step1_clustering(dataset_name=dataset_to_use)
     fcg.step2_genetic_evolution()
     
     # Evaluate with different strategies
@@ -526,8 +555,19 @@ if __name__ == "__main__":
             
             predictions.append(pred)
             true_labels.append(true_label)
-            z = 1 if row.get("sex") == "Male" else 0
+            
+            if dataset_to_use == "adult":
+                z = 1 if row.get("sex") == "Male" else 0
+            elif dataset_to_use == "credit":
+                z = 1 if str(row.get("sex", "")) == "1" else 0
+            else:
+                z = 1
+                
             sensitive_attrs.append(z)
+            
+            # Print debug info for the first 5 test samples to ensure predictions look solid
+            if i < 5:
+                print(f"[DEBUG TEST {i}] Ground Truth={true_label}, LLM Pred={pred}, Z={z}")
         
         # Calculate accuracy
         accuracy = sum(1 for p, t in zip(predictions, true_labels) if p == t) / len(predictions)

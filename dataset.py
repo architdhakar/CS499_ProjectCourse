@@ -4,7 +4,15 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import load_dataset
 
 MODEL_NAME = "gpt2"
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+if torch.cuda.is_available():
+    DEVICE = "cuda"
+elif torch.backends.mps.is_available():
+    # Use Apple Silicon GPU (Metal Performance Shaders)
+    DEVICE = "mps"
+else:
+    DEVICE = "cpu"
+
+print(f"Using device: {DEVICE}")
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForCausalLM.from_pretrained(MODEL_NAME).to(DEVICE)
@@ -28,6 +36,42 @@ def get_llm_probabilities(text_input):
     scores = torch.tensor([logits[t] for t in label_map.values()])
     probs = F.softmax(scores, dim=0)
     return probs.tolist()
+
+# -----------------------------------------------------
+# 1.5 Credit Card Default Dataset
+# -----------------------------------------------------
+def load_credit():
+    # Use UCI credit card default dataset. Since huggingface datasets has default of credit card clients.
+    # Provide a simple local mock/loader or load from huggingface if available. 
+    # For now, let's load it from a known hub path or simulate if it cannot be loaded.
+    try:
+        from datasets import load_dataset
+        dataset = load_dataset("imodels/credit-card")
+        full = dataset["train"]
+        split = full.train_test_split(test_size=0.2, seed=42)
+        
+        def formatter(row):
+            return (
+                f"Limit Balance: {row['limit_bal']}, "
+                f"Sex: {row['sex']}, "
+                f"Education: {row['education']}, "
+                f"Marriage: {row['marriage']}, "
+                f"Age: {row['age']}, "
+                f"History 1: {row['pay_0']}, "
+                f"Bill Amount 1: {row['bill_amt1']}, "
+                f"Pay Amount 1: {row['pay_amt1']}\nDefault:"
+            )
+
+        def label_fn(row):
+            # Target is `default.payment.next.month`
+            return "Positive" if float(row.get("default.payment.next.month", 0)) == 1.0 else "Negative"
+
+        return split["train"], split["test"], formatter, label_fn
+
+    except Exception as e:
+        print(f"Failed to load credit card dataset: {e}")
+        # Return empty lists as fallback, preventing hard crash
+        return [], [], lambda x: "", lambda x: "Negative"
 
 # -----------------------------------------------------
 # 1️⃣ Adult Income (structured fairness dataset)
