@@ -67,6 +67,68 @@ def fairnessScore(prompt_example):
     return -sum(p * math.log(p + EPS) for p in probs)
 
 # ----------------------------
+# DP + EO Fairness Metrics
+# ----------------------------
+def compute_fairness_metrics(demos, data):
+    preds = []
+    labels = []
+    sens = []
+
+    for i in range(NUM_EVAL):
+        row = data[i]
+
+        # Build prompt and predict
+        prompt = build_prompt(demos, row)
+        pred = predict_label(prompt)
+        true_label = label_to_word(row["income"])
+
+        preds.append(1 if pred == "Positive" else 0)
+        labels.append(1 if true_label == "Positive" else 0)
+        sens.append(1 if row["sex"] == "Male" else 0)
+
+    import numpy as np
+    preds = np.array(preds)
+    labels = np.array(labels)
+    sens = np.array(sens)
+
+    minority = (sens == 0)
+    majority = (sens == 1)
+
+    # ---------------- DP ----------------
+    dp_min = preds[minority].mean() if minority.sum() > 0 else 0
+    dp_maj = preds[majority].mean() if majority.sum() > 0 else 0
+
+    dp_diff = abs(dp_maj - dp_min)
+    dp_ratio = min(dp_min, dp_maj) / (max(dp_min, dp_maj) + EPS)
+
+    # ---------------- EO ----------------
+    def tpr(mask):
+        pos = (labels == 1) & mask
+        return (preds[pos] == 1).mean() if pos.sum() > 0 else 0
+
+    def fpr(mask):
+        neg = (labels == 0) & mask
+        return (preds[neg] == 1).mean() if neg.sum() > 0 else 0
+
+    tpr_min = tpr(minority)
+    tpr_maj = tpr(majority)
+    fpr_min = fpr(minority)
+    fpr_maj = fpr(majority)
+
+    eo_diff = max(abs(tpr_min - tpr_maj), abs(fpr_min - fpr_maj))
+
+    tpr_ratio = tpr_min / (tpr_maj + EPS)
+    fpr_ratio = fpr_min / (fpr_maj + EPS)
+    eo_ratio = min(tpr_ratio, fpr_ratio)
+
+    return {
+        "dp_diff": dp_diff,
+        "dp_ratio": dp_ratio,
+        "eo_diff": eo_diff,
+        "eo_ratio": eo_ratio
+    }
+
+# ----------------------------
 # T-fair
 # ----------------------------
 def TFairPrompting(training_examples, k):
@@ -150,10 +212,20 @@ for name, demos in [
     ("T-Fair", t_fair_demos),
     ("G-Fair", g_fair_demos),
 ]:
-    fairness = fairnessScore("\n".join(demos))
+    entropy_fairness = fairnessScore("\n".join(demos))
     accuracy = evaluate_prompt(demos, test_data)
-    results.append((name, fairness, accuracy))
-    print(f"{name}: fairness={fairness:.4f}, accuracy={accuracy:.3f}")
+
+    metrics = compute_fairness_metrics(demos, test_data)
+
+    results.append((name, entropy_fairness, accuracy))
+
+    print(f"\n{name}:")
+    print(f"  Accuracy = {accuracy:.3f}")
+    print(f"  Entropy Fairness = {entropy_fairness:.4f}")
+    print(f"  DP Ratio = {metrics['dp_ratio']:.4f} ↑")
+    print(f"  DP Diff  = {metrics['dp_diff']:.4f} ↓")
+    print(f"  EO Ratio = {metrics['eo_ratio']:.4f} ↑")
+    print(f"  EO Diff  = {metrics['eo_diff']:.4f} ↓")
 
 # ----------------------------
 # Plot
