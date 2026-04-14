@@ -15,7 +15,41 @@ from fcg_algo_main import (
     stratify_by_groups,
     EPS
 )
-from dataset import get_llm_probabilities
+from dataset import get_llm_probabilities, MODEL_NAME
+
+# ============================================================================
+# PROMPT TRUNCATION UTILITIES
+# ============================================================================
+
+try:
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+except:
+    tokenizer = None
+
+MAX_PROMPT_LENGTH = 900
+
+def truncate_prompt(prompt: str, max_length: int = MAX_PROMPT_LENGTH) -> str:
+    """
+    Truncate prompt to fit within model's max sequence length.
+    Keeps the most recent demonstrations (end of prompt) which are more relevant.
+    """
+    if tokenizer is None:
+        # Fallback: truncate by character count
+        chars_per_token = 4  # Approximate
+        max_chars = max_length * chars_per_token
+        if len(prompt) > max_chars:
+            return prompt[-max_chars:]
+        return prompt
+    
+    tokens = tokenizer.encode(prompt, add_special_tokens=False)
+    if len(tokens) <= max_length:
+        return prompt
+    
+    # Keep the most recent tokens
+    truncated_tokens = tokens[-max_length:]
+    truncated_prompt = tokenizer.decode(truncated_tokens, skip_special_tokens=True)
+    return truncated_prompt
 
 
 class FairnessAwareActiveLearning:
@@ -72,6 +106,8 @@ class FairnessAwareActiveLearning:
         Returns: Entropy value [0, 1]
         """
         try:
+            # TRUNCATE demo_prompt to avoid sequence length issues
+            demo_prompt = truncate_prompt(demo_prompt, max_length=MAX_PROMPT_LENGTH)
             full_input = demo_prompt + "\nInput: " + self.formatter(row) + "\nIncome:"
             probs = get_llm_probabilities(full_input)
             
@@ -90,76 +126,67 @@ class FairnessAwareActiveLearning:
                                      demo_prompt: str,
                                      sample_size: int = 15) -> np.ndarray:
         """
-        FIX #1: Compute per-sample fairness gap correctly.
+        Compute per-sample fairness gap score.
         
-        ORIGINAL BUG: Set unsampled predictions to 0.5, which skewed fairness
-        FIXED: Only compute fairness metrics on evaluated samples
+        Strategy: Ensure balanced representation of labels and demographics
+        in the demonstration set.
         
-        For each sample, compute how much adding it to training would reduce
-        the current fairness gap: |P(Y=1|Z=0) - P(Y=1|Z=1)|
-        
-        Returns: Array of fairness gap reduction scores [0, 1]
+        Returns: Array of fairness gap scores [0, 1]
         """
         fairness_gaps = np.zeros(len(unlabeled_data))
         
-        # Step 1: Sample unlabeled data for efficiency
+        # Count demographic and label representation
+        sensitive_attrs = np.array([self._extract_sensitive_attr(row) for row in unlabeled_data])
+        
+        # Sample to evaluate (for efficiency)
         sample_indices = np.random.choice(
             len(unlabeled_data),
             size=min(sample_size, len(unlabeled_data)),
             replace=False
         )
         
-        # Step 2: Get predictions ONLY for sampled indices
-        predictions = np.zeros(len(unlabeled_data))
-        sensitive_attrs = np.array([self._extract_sensitive_attr(row) for row in unlabeled_data])
+        # Analyze existing demonstrations
+        if demo_prompt and len(demo_prompt.strip()) > 10:
+            # Count labels in existing demos
+            pos_count = demo_prompt.count("Income: Positive")
+            neg_count = demo_prompt.count("Income: Negative")
+            total_demos = pos_count + neg_count
+            
+            if total_demos > 0:
+                pos_ratio = pos_count / total_demos
+                neg_ratio = neg_count / total_demos
+            else:
+                pos_ratio = 0.5
+                neg_ratio = 0.5
+        else:
+            # No existing demos - start balanced
+            pos_ratio = 0.5
+            neg_ratio = 0.5
         
+        # For each sample, compute fairness score
         for i in sample_indices:
             row = unlabeled_data[i]
-            try:
-                pred = predict_with_llm(demo_prompt, self.formatter, row)
-                pred_binary = 1 if pred == "Positive" else 0
-                predictions[i] = pred_binary
-            except:
-                predictions[i] = 0.5
-        
-        # Step 3: Compute current fairness gap ONLY from sampled data
-        # IMPORTANT: Only use samples we actually evaluated
-        minority_mask_sampled = sensitive_attrs[sample_indices] == 0
-        majority_mask_sampled = sensitive_attrs[sample_indices] == 1
-        
-        if minority_mask_sampled.sum() > 0:
-            p_minority = predictions[sample_indices[minority_mask_sampled]].mean()
-        else:
-            p_minority = 0.5
+            label = self.label_fn(row)
+            demo_group = sensitive_attrs[i]
             
-        if majority_mask_sampled.sum() > 0:
-            p_majority = predictions[sample_indices[majority_mask_sampled]].mean()
-        else:
-            p_majority = 0.5
-        
-        current_gap = abs(p_minority - p_majority)
-        
-        # Step 4: For each SAMPLED sample, estimate impact if added to training
-        for idx_in_sample in range(len(sample_indices)):
-            i = sample_indices[idx_in_sample]
+            # Score components:
+            # 1. Demographic balance: Prefer minority group if underrepresented
+            if demo_group == 0:  # Minority
+                demographic_score = 1.0  # Always high to encourage minority
+            else:
+                demographic_score = 0.3  # Lower for majority
             
-            # Count samples in each group
-            n_minority = minority_mask_sampled.sum()
-            n_majority = majority_mask_sampled.sum()
+            # 2. Label balance: Prefer underrepresented labels strongly
+            if label == "Positive" and pos_ratio < 0.5:
+                label_score = 1.0  # Positive samples are valuable if underrepresented
+            elif label == "Negative" and neg_ratio < 0.5:
+                label_score = 1.0  # Negative samples are valuable if underrepresented
+            else:
+                label_score = 0.2  # Low score if label is already well represented
             
-            # Simulate adding this sample to training
-            if sensitive_attrs[i] == 0:  # Sample is in minority
-                # Adding to minority group → update p_minority
-                new_p_minority = (p_minority * n_minority + predictions[i]) / (n_minority + 1)
-                new_p_majority = p_majority
-            else:  # Sample is in majority
-                # Adding to majority group → update p_majority
-                new_p_minority = p_minority
-                new_p_majority = (p_majority * n_majority + predictions[i]) / (n_majority + 1)
-            
-            new_gap = abs(new_p_minority - new_p_majority)
-            gap_reduction = max(0, current_gap - new_gap)
-            fairness_gaps[i] = gap_reduction
+            # Combined fairness score (weighted average)
+            # Weight label balance higher since it directly affects model accuracy
+            fairness_gaps[i] = 0.4 * demographic_score + 0.6 * label_score
         
         return fairness_gaps
     
@@ -275,7 +302,7 @@ class FairnessAwareActiveLearning:
             # Build current demonstration prompt
             if selected_demos:
                 demo_prompt = "\n".join([
-                    self.formatter(demo) + " " + self.label_fn(demo)
+                    self.formatter(demo) + " Income: " + self.label_fn(demo)
                     for demo in selected_demos
                 ])
             else:
@@ -414,9 +441,12 @@ class FairnessAwareActiveLearning:
             
             # Build prompt
             demo_prompt = "\n".join([
-                self.formatter(demo) + " " + self.label_fn(demo)
+                self.formatter(demo) + " Income: " + self.label_fn(demo)
                 for demo in demos
             ])
+            
+            # TRUNCATE PROMPT to avoid sequence length issues
+            demo_prompt = truncate_prompt(demo_prompt, max_length=MAX_PROMPT_LENGTH)
             
             # Evaluate
             predictions = []

@@ -33,7 +33,8 @@ def get_llm_probabilities(text_input):
         outputs = model(**inputs)
 
     logits = outputs.logits[0, -1, :]
-    scores = torch.tensor([logits[t] for t in label_map.values()])
+    # IMPORTANT: Use label_words order (Negative, Positive) to ensure consistency
+    scores = torch.tensor([logits[label_map[word]] for word in label_words])
     probs = F.softmax(scores, dim=0)
     return probs.tolist()
 
@@ -91,7 +92,7 @@ def load_adult():
             f"Relationship: {row['relationship']}, "
             f"Race: {row['race']}, "
             f"Sex: {row['sex']}, "
-            f"Hours per week: {row['hours.per.week']}\nIncome:"
+            f"Hours per week: {row['hours.per.week']}"
         )
 
     def label_fn(row):

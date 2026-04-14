@@ -188,8 +188,18 @@ def predict_with_llm(prompt, formatter, row):
     
     IMPORTANT: get_llm_probabilities returns probs in the order of label_map.keys()
     (insertion order: Negative, Positive), NOT in sorted order by token ID.
+    
+    Args:
+        prompt: Demonstration prompt (e.g., "formatted_sample1 Positive\nformatted_sample2 Negative\n...")
+        formatter: Function to format row
+        row: Data row to predict for
     """
-    full_input = prompt + "\nInput: " + formatter(row) + "\nIncome:"
+    # Build the full input: demonstrations + test sample + label prompt
+    if prompt:
+        full_input = prompt + "\n" + formatter(row) + "\nIncome:"
+    else:
+        full_input = formatter(row) + "\nIncome:"
+    
     probs = get_llm_probabilities(full_input)
     
     # Probs are in the order of label_map dictionary keys (Negative, Positive)

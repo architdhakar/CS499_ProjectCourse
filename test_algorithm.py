@@ -19,6 +19,8 @@ import random
 from typing import Dict, List, Tuple
 from copy import deepcopy
 import warnings
+import torch
+from transformers import AutoTokenizer
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
@@ -32,17 +34,50 @@ from fcg_algo_main import (
     EPS
 )
 from active_learning_fairness import FairnessAwareActiveLearning
-from dataset import get_llm_probabilities
+from dataset import get_llm_probabilities, MODEL_NAME, DEVICE
+
+# ============================================================================
+# PROMPT TRUNCATION UTILITIES
+# ============================================================================
+
+try:
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+except:
+    tokenizer = None
+
+MAX_PROMPT_LENGTH = 900  # Leave room for the test sample (keep under 1024 total)
+
+def truncate_prompt(prompt: str, max_length: int = MAX_PROMPT_LENGTH) -> str:
+    """
+    Truncate prompt to fit within model's max sequence length.
+    Keeps the most recent demonstrations (end of prompt) which are more relevant.
+    """
+    if tokenizer is None:
+        # Fallback: truncate by character count
+        chars_per_token = 4  # Approximate
+        max_chars = max_length * chars_per_token
+        if len(prompt) > max_chars:
+            return prompt[-max_chars:]
+        return prompt
+    
+    tokens = tokenizer.encode(prompt, add_special_tokens=False)
+    if len(tokens) <= max_length:
+        return prompt
+    
+    # Keep the most recent tokens
+    truncated_tokens = tokens[-max_length:]
+    truncated_prompt = tokenizer.decode(truncated_tokens, skip_special_tokens=True)
+    return truncated_prompt
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
 
 DATASET_NAME = "adult"
-DEMO_BUDGET = 5  # Reduced from 10 to save time
-TEST_SAMPLE_SIZE = 50  # Reduced from 300 for faster testing
+DEMO_BUDGET = 8  # Number of demonstrations to select
+TEST_SAMPLE_SIZE = 200  # Number of test samples to evaluate per method
 EVAL_SIZE = 5  # Number of samples to evaluate for uncertainty/fairness
-NUM_TRIALS = 3  # Number of independent runs
+NUM_TRIALS = 1  # Number of independent runs
 RANDOM_SEED = 42
 
 # Set seeds for reproducibility
@@ -94,6 +129,8 @@ class UncertaintyOnlySelection:
     
     def _compute_uncertainty_score(self, row: Dict, demo_prompt: str) -> float:
         try:
+            # TRUNCATE demo_prompt to avoid sequence length issues
+            demo_prompt = truncate_prompt(demo_prompt, max_length=MAX_PROMPT_LENGTH)
             full_input = demo_prompt + "\nInput: " + self.formatter(row) + "\nIncome:"
             probs = get_llm_probabilities(full_input)
             entropy = -sum(p * np.log(p + EPS) for p in probs)
@@ -196,11 +233,14 @@ def evaluate_demos(demos: List[Dict], test_data: List[Dict],
             'num_eval': 0
         }
     
-    # Build demo prompt
+    # Build demo prompt with proper format: "formatted_row Income: Label"
     demo_prompt = "\n".join([
-        formatter(demo) + " " + label_fn(demo)
+        formatter(demo) + " Income: " + label_fn(demo)
         for demo in demos
     ])
+    
+    # TRUNCATE PROMPT to avoid sequence length issues
+    demo_prompt = truncate_prompt(demo_prompt, max_length=MAX_PROMPT_LENGTH)
     
     # Evaluate on test set
     predictions = []
@@ -221,6 +261,7 @@ def evaluate_demos(demos: List[Dict], test_data: List[Dict],
         try:
             pred = predict_with_llm(demo_prompt, formatter, row)
         except Exception as e:
+            # Fallback to "Negative" on error (prevents crashes)
             pred = "Negative"
         
         predictions.append(pred)
