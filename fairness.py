@@ -8,7 +8,6 @@ from dataset import (
     label_map,
     load_sst2,
     load_agnews_binary,
-    load_trec_binary,
     load_rte
 )
 
@@ -22,7 +21,7 @@ K = 3
 NUM_EVAL = 200
 EPS = 1e-12
 
-DATASETS = ["sst2", "agnews", "trec", "rte"]
+DATASETS = ["sst2", "agnews", "rte"]
 
 all_dataset_results = {}
 
@@ -139,8 +138,6 @@ for DATASET in DATASETS:
         train_data, test_data, formatter, label_fn = load_sst2()
     elif DATASET == "agnews":
         train_data, test_data, formatter, label_fn = load_agnews_binary()
-    elif DATASET == "trec":
-        train_data, test_data, formatter, label_fn = load_trec_binary()
     elif DATASET == "rte":
         train_data, test_data, formatter, label_fn = load_rte()
 

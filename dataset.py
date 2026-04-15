@@ -134,25 +134,6 @@ def load_agnews_binary():
 
     return dataset["train"], dataset["test"], formatter, label_fn
 
-
-# -----------------------------------------------------
-# 4️⃣ TREC Question Classification (binary mapped)
-# -----------------------------------------------------
-def load_trec_binary():
-    dataset = load_dataset("trec")
-
-    def formatter(row):
-        return f"Question: {row['text']}\nLabel:"
-
-    def label_fn(row):
-        # Binary mapping:
-        # numeric type = Positive
-        # others = Negative
-        return "Positive" if row["coarse_label"] == 2 else "Negative"
-
-    return dataset["train"], dataset["test"], formatter, label_fn
-
-
 # -----------------------------------------------------
 # 5️⃣ RTE (Recognizing Textual Entailment)
 # -----------------------------------------------------
