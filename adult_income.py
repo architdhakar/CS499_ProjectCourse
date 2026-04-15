@@ -3,6 +3,11 @@ import random
 import matplotlib.pyplot as plt
 from datasets import load_dataset
 from dataset import get_llm_probabilities, label_map
+from sklearn.cluster import KMeans
+import numpy as np
+
+random.seed(42)
+np.random.seed(42)
 
 EPS = 1e-12
 K = 3
@@ -129,6 +134,54 @@ def compute_fairness_metrics(demos, data):
     }
 
 # ----------------------------
+# Individual Fairness (Consistency)
+# ----------------------------
+def compute_individual_fairness(demos, data, num_pairs=100):
+    import numpy as np
+    import random
+
+    def similarity(row1, row2):
+        score = 0
+        keys = ["education", "occupation", "hours.per.week"]
+
+        for k in keys:
+            if str(row1[k]) == str(row2[k]):
+                score += 1
+
+        # age: allow small tolerance
+        if abs(row1["age"] - row2["age"]) <= 5:
+            score += 1
+
+        return score / (len(keys) + 1)
+
+    diffs = []
+
+    for _ in range(num_pairs):
+        i, j = random.sample(range(len(data)), 2)
+        row1, row2 = data[i], data[j]
+
+        sim = similarity(row1, row2)
+
+        if sim < 0.75:
+            continue
+
+        prompt1 = build_prompt(demos, row1)
+        prompt2 = build_prompt(demos, row2)
+
+        pred1 = predict_label(prompt1)
+        pred2 = predict_label(prompt2)
+
+        p1 = 1 if pred1 == "Positive" else 0
+        p2 = 1 if pred2 == "Positive" else 0
+
+        diffs.append(abs(p1 - p2))
+
+    if len(diffs) == 0:
+        return 1.0
+
+    return 1 - np.mean(diffs)
+
+# ----------------------------
 # T-fair
 # ----------------------------
 def TFairPrompting(training_examples, k):
@@ -170,6 +223,39 @@ def GFairPrompting(training_examples):
 
     return selected
 
+def diversity_prompt(data, k):
+    data_list = [data[i] for i in range(min(100, len(data)))]  # FIX
+
+    X = np.array([
+        [row['age'], hash(row['education']) % 100, row['hours.per.week']]
+        for row in data_list
+    ])
+
+    kmeans = KMeans(n_clusters=k, random_state=42, n_init=10).fit(X)
+
+    selected = []
+    for center in kmeans.cluster_centers_:
+        distances = np.linalg.norm(X - center, axis=1)
+        idx = np.argmin(distances)
+        selected.append(format_example(data_list[idx], include_label=True))
+
+    return selected
+
+def similarity_prompt(data, k):
+    data_list = [data[i] for i in range(min(100, len(data)))]  # FIX
+
+    base = data_list[0]
+
+    def dist(row):
+        return abs(row['age'] - base['age'])
+
+    sorted_data = sorted(data_list, key=dist)
+
+    return [
+        format_example(row, include_label=True)
+        for row in sorted_data[:k]
+    ]
+
 # ----------------------------
 # Evaluation
 # ----------------------------
@@ -203,29 +289,47 @@ def random_prompt(examples, k):
 # ----------------------------
 random_demos = random_prompt(candidates, K)
 t_fair_demos = TFairPrompting(candidates, K)
-g_fair_demos = GFairPrompting(candidates)
+g_fair_demos = GFairPrompting(candidates)[:K]
 
 results = []
 
-for name, demos in [
-    ("Random", random_demos),
-    ("T-Fair", t_fair_demos),
-    ("G-Fair", g_fair_demos),
-]:
+rand_accuracy = evaluate_prompt(random_demos, test_data)
+rand_entropy = fairnessScore("\n".join(random_demos))
+rand_metrics = compute_fairness_metrics(random_demos, test_data)
+rand_if = compute_individual_fairness(random_demos, test_data)
+
+results.append(("Random", rand_entropy, rand_accuracy))
+
+print(f"\nRandom:")
+print(f"  Accuracy = {rand_accuracy:.3f}")
+print(f"  Entropy Fairness = {rand_entropy:.4f}")
+print(f"  DP Ratio = {rand_metrics['dp_ratio']:.4f}")
+print(f"  EO Ratio = {rand_metrics['eo_ratio']:.4f}")
+print(f"  Individual Fairness = {rand_if:.4f}")
+
+# Other methods
+methods = [
+    ("T-Fair", TFairPrompting(candidates, K)),
+    ("G-Fair", GFairPrompting(candidates)[:K]),
+    ("Diversity", diversity_prompt(train_data, K)),
+    ("Similarity", similarity_prompt(train_data, K)),
+]
+
+for name, demos in methods:
     entropy_fairness = fairnessScore("\n".join(demos))
     accuracy = evaluate_prompt(demos, test_data)
 
     metrics = compute_fairness_metrics(demos, test_data)
+    indiv_fair = compute_individual_fairness(demos, test_data)
 
     results.append((name, entropy_fairness, accuracy))
 
     print(f"\n{name}:")
     print(f"  Accuracy = {accuracy:.3f}")
     print(f"  Entropy Fairness = {entropy_fairness:.4f}")
-    print(f"  DP Ratio = {metrics['dp_ratio']:.4f} ↑")
-    print(f"  DP Diff  = {metrics['dp_diff']:.4f} ↓")
-    print(f"  EO Ratio = {metrics['eo_ratio']:.4f} ↑")
-    print(f"  EO Diff  = {metrics['eo_diff']:.4f} ↓")
+    print(f"  DP Ratio = {metrics['dp_ratio']:.4f}")
+    print(f"  EO Ratio = {metrics['eo_ratio']:.4f}")
+    print(f"  Individual Fairness = {indiv_fair:.4f}")
 
 # ----------------------------
 # Plot
