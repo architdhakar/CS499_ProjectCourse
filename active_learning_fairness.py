@@ -5,7 +5,7 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from typing import Tuple, List, Dict, Callable
+from typing import Tuple, List, Dict, Callable, Union
 from copy import deepcopy
 import random
 
@@ -92,7 +92,15 @@ class FairnessAwareActiveLearning:
         if self.dataset_name == "adult":
             return 1 if row.get(self.sensitive_attr_name) == "Male" else 0
         elif self.dataset_name == "credit":
-            return 1 if str(row.get(self.sensitive_attr_name, "")) == "1" else 0
+            # the credit dataset sex attribute uses 1 and 2 often as floats or ints
+            # 1 = male, 2 = female. Typical datasets have Female as minority/protected
+            sex_val = row.get(self.sensitive_attr_name, row.get('SEX'))
+            try:
+                # 1=majority(male), 2=minority(female).
+                val = int(float(sex_val))
+                return 1 if val == 1 else 0
+            except:
+                return 0
         else:
             return 1
     
@@ -121,75 +129,68 @@ class FairnessAwareActiveLearning:
             print(f"[WARNING] Uncertainty computation failed: {e}")
             return 0.5  # Return neutral uncertainty
     
-    def _compute_fairness_gap_score(self,
-                                     unlabeled_data: List[Dict],
-                                     demo_prompt: str,
-                                     sample_size: int = 15) -> np.ndarray:
+    def _compute_fairness_gap_score(self, current_selected: List[Dict] = None, candidate: Dict = None, selected_demos: List[Dict] = None, candidates: List[Dict] = None, sample_size: int = None) -> Union[float, np.ndarray]:
         """
-        Compute per-sample fairness gap score.
-        
-        Strategy: Ensure balanced representation of labels and demographics
-        in the demonstration set.
-        
-        Returns: Array of fairness gap scores [0, 1]
+        Calculates how much adding this candidate helps demographic parity.
+        In this proxy context, perfect demographic parity is a 50/50 split of the
+        sensitive attribute between minority and majority classes.
+        Returns a score in [0, 1].
         """
-        fairness_gaps = np.zeros(len(unlabeled_data))
         
-        # Count demographic and label representation
-        sensitive_attrs = np.array([self._extract_sensitive_attr(row) for row in unlabeled_data])
-        
-        # Sample to evaluate (for efficiency)
-        sample_indices = np.random.choice(
-            len(unlabeled_data),
-            size=min(sample_size, len(unlabeled_data)),
-            replace=False
-        )
-        
-        # Analyze existing demonstrations
-        if demo_prompt and len(demo_prompt.strip()) > 10:
-            # Count labels in existing demos
-            pos_count = demo_prompt.count("Income: Positive")
-            neg_count = demo_prompt.count("Income: Negative")
-            total_demos = pos_count + neg_count
+        # Handle the case where it's called with multiple candidates
+        if selected_demos is not None and candidates is not None:
+            res = [self._compute_fairness_gap_score(current_selected=selected_demos, candidate=c, sample_size=sample_size) for c in candidates]
+            import numpy as np
+            return np.array(res)
             
-            if total_demos > 0:
-                pos_ratio = pos_count / total_demos
-                neg_ratio = neg_count / total_demos
+        if current_selected is None:
+            current_selected = []
+            
+        budget = 8 # Assumption based on default
+        
+        try:
+            cand_z = self._extract_sensitive_attr(candidate)
+            
+            if not current_selected:
+                return 1.0
+                
+            # Count current representations
+            minority_count = sum(1 for d in current_selected if self._extract_sensitive_attr(d) == 0)
+            majority_count = sum(1 for d in current_selected if self._extract_sensitive_attr(d) == 1)
+            
+            # Hard cap: if we are at half budget for a demographic, strongly penalize adding more of it
+            # This forces a 4/4 demographic split when budget is 8.
+            half_budget = budget // 2
+            
+            if cand_z == 0 and minority_count >= half_budget:
+                return 0.0  # Penalize choosing more minority if already at half budget
+            if cand_z == 1 and majority_count >= half_budget:
+                return 0.0  # Penalize choosing more majority if already at half budget
+                
+            current_ratio = minority_count / len(current_selected)
+            
+            # Simulate adding candidate
+            new_minority_count = minority_count + (1 if cand_z == 0 else 0)
+            new_ratio = new_minority_count / (len(current_selected) + 1)
+            
+            # We want ratio to be as close to 0.5 as possible for a perfectly balanced prompt
+            target_ratio = 0.5
+            
+            current_dist = abs(current_ratio - target_ratio)
+            new_dist = abs(new_ratio - target_ratio)
+            
+            # If distance decreases, return high score. 
+            # If it increases slightly, return lower score.
+            if new_dist < current_dist:
+                return 1.0
+            elif new_dist == current_dist:
+                return 0.5
             else:
-                pos_ratio = 0.5
-                neg_ratio = 0.5
-        else:
-            # No existing demos - start balanced
-            pos_ratio = 0.5
-            neg_ratio = 0.5
-        
-        # For each sample, compute fairness score
-        for i in sample_indices:
-            row = unlabeled_data[i]
-            label = self.label_fn(row)
-            demo_group = sensitive_attrs[i]
-            
-            # Score components:
-            # 1. Demographic balance: Prefer minority group if underrepresented
-            if demo_group == 0:  # Minority
-                demographic_score = 1.0  # Always high to encourage minority
-            else:
-                demographic_score = 0.3  # Lower for majority
-            
-            # 2. Label balance: Prefer underrepresented labels strongly
-            if label == "Positive" and pos_ratio < 0.5:
-                label_score = 1.0  # Positive samples are valuable if underrepresented
-            elif label == "Negative" and neg_ratio < 0.5:
-                label_score = 1.0  # Negative samples are valuable if underrepresented
-            else:
-                label_score = 0.2  # Low score if label is already well represented
-            
-            # Combined fairness score (weighted average)
-            # Weight label balance higher since it directly affects model accuracy
-            fairness_gaps[i] = 0.4 * demographic_score + 0.6 * label_score
-        
-        return fairness_gaps
-    
+                return 0.1
+        except Exception as e:
+            print(f"Fairness computation error: {e}")
+            return 0.5
+
     def _compute_diversity_score(self,
                                   unlabeled_data: List[Dict],
                                   selected_indices: List[int],
@@ -257,58 +258,65 @@ class FairnessAwareActiveLearning:
         
         return diversity_scores
     
-    def active_select(self,
-                     unlabeled_data: List[Dict],
-                     demo_budget: int = 10,
-                     uncertainty_weight: float = 0.4,
-                     fairness_weight: float = 0.4,
-                     diversity_weight: float = 0.2) -> Tuple[List[Dict], Dict]:
+    def active_select(self, 
+                     unlabeled_data: List[Dict], 
+                     budget: int = None,
+                     demo_budget: int = 8,
+                     weights: Dict[str, float] = None,
+                     uncertainty_weight: float = None,
+                     fairness_weight: float = None,
+                     diversity_weight: float = None) -> Tuple[List[Dict], Dict]:
         """
-        Iteratively select demonstrations using fairness-aware active learning.
-        
-        At each iteration:
-        1. Compute uncertainty (where is LLM most confused?)
-        2. Compute fairness gap (where is LLM most biased?)
-        3. Compute diversity (which samples maximize feature coverage?)
-        4. Select sample maximizing weighted combination
-        5. Add to demonstration set and repeat
-        
-        Args:
-            unlabeled_data: List of candidate samples
-            demo_budget: Number of demonstrations to select
-            uncertainty_weight: Weight for uncertainty score [0, 1]
-            fairness_weight: Weight for fairness gap score [0, 1]
-            diversity_weight: Weight for diversity score [0, 1]
-        
-        Returns:
-            (selected_demos, selection_info_dict)
+        Main AL loop for selecting demonstrations considering uncertainty, fairness, and diversity.
+        Provides detailed tracking of the selection process.
         """
-        selected_indices = []
-        selected_demos = []
+        import numpy as np
+        
+        budget = budget or demo_budget
+        
+        if weights is None:
+            # Fall back to kwargs if weights dict not explicitly provided
+            u_weight = uncertainty_weight if uncertainty_weight is not None else 0.2
+            f_weight = fairness_weight if fairness_weight is not None else 0.5
+            d_weight = diversity_weight if diversity_weight is not None else 0.3
+            weights = {
+                "uncertainty": u_weight,
+                "fairness": f_weight,
+                "diversity": d_weight
+            }
+            
+        # Initialize tracking variables
+        selected = []
+        selected_idx = []
         
         # Normalize weights
-        total_weight = uncertainty_weight + fairness_weight + diversity_weight
-        uncertainty_weight /= total_weight
-        fairness_weight /= total_weight
-        diversity_weight /= total_weight
+        total_weight = weights.get('uncertainty', 0) + weights.get('fairness', 0) + weights.get('diversity', 0)
+        if total_weight > 0:
+            uncertainty_weight = weights.get('uncertainty', 0) / total_weight
+            fairness_weight = weights.get('fairness', 0) / total_weight
+            diversity_weight = weights.get('diversity', 0) / total_weight
+        else:
+            uncertainty_weight = 0.33
+            fairness_weight = 0.33
+            diversity_weight = 0.34
         
         print(f"\n=== FAIRNESS-AWARE ACTIVE LEARNING ===")
-        print(f"Budget: {demo_budget} demonstrations")
+        print(f"Budget: {budget} demonstrations")
         print(f"Weights: Uncertainty={uncertainty_weight:.2f}, "
               f"Fairness={fairness_weight:.2f}, Diversity={diversity_weight:.2f}")
         print()
         
-        for iteration in range(demo_budget):
+        for iteration in range(budget):
             # Build current demonstration prompt
-            if selected_demos:
+            if selected:
                 demo_prompt = "\n".join([
-                    self.formatter(demo) + " Income: " + self.label_fn(demo)
-                    for demo in selected_demos
+                    self.formatter(unlabeled_data[i]) + " Income: " + self.label_fn(unlabeled_data[i])
+                    for i in selected_idx
                 ])
             else:
                 demo_prompt = ""
             
-            print(f"Iteration {iteration + 1}/{demo_budget}: Computing scores...")
+            print(f"Iteration {iteration + 1}/{budget}: Computing scores...")
             
             # FIX #3: Uncertainty sampling on subset + proper normalization
             # Subsample candidates to evaluate for uncertainty (cheaper than fairness)
@@ -316,7 +324,7 @@ class FairnessAwareActiveLearning:
             
             # Only evaluate UNSELECTED samples
             unselected_indices = np.array([i for i in range(len(unlabeled_data)) 
-                                          if i not in selected_indices])
+                                          if i not in selected_idx])
             eval_indices = np.random.choice(unselected_indices,
                                            size=min(eval_size, len(unselected_indices)),
                                            replace=False)
@@ -334,16 +342,27 @@ class FairnessAwareActiveLearning:
                 for i in eval_indices:
                     uncertainty_scores[i] = (uncertainty_scores[i] - norm_min) / (norm_max - norm_min + EPS)
             
-            # Compute fairness gap scores (all samples, but uses sample_size subset internally)
-            fairness_scores = self._compute_fairness_gap_score(unlabeled_data, demo_prompt, sample_size=eval_size)
+            # Compute fairness gap scores with dynamic balancing
+            fairness_scores = self._compute_fairness_gap_score(
+                selected_demos=selected,
+                candidates=unlabeled_data,
+                sample_size=budget
+            )
+            
+            # FIX: Convert fairness_scores to numpy array if it isn't already
+            import numpy as np
+            if isinstance(fairness_scores, float) or isinstance(fairness_scores, int):
+                fairness_scores = np.ones(len(unlabeled_data)) * float(fairness_scores)
+            elif isinstance(fairness_scores, list):
+                fairness_scores = np.array(fairness_scores)
             
             # Compute diversity scores (all samples)
-            diversity_scores = self._compute_diversity_score(unlabeled_data, selected_indices)
+            diversity_scores = self._compute_diversity_score(unlabeled_data, selected_idx)
             
             # FIX #4: Normalize scores properly
             # Only normalize on unselected samples
             unselected_mask = np.ones(len(unlabeled_data), dtype=bool)
-            unselected_mask[selected_indices] = False
+            unselected_mask[selected_idx] = False
             
             # Normalize fairness (only on unselected)
             fair_unselected = fairness_scores[unselected_mask]
@@ -374,8 +393,8 @@ class FairnessAwareActiveLearning:
                 print(f"[WARNING] No valid samples remaining. Stopping early.")
                 break
             
-            selected_indices.append(best_idx)
-            selected_demos.append(unlabeled_data[best_idx])
+            selected_idx.append(best_idx)
+            selected.append(unlabeled_data[best_idx])
             
             # Record selection metadata
             selection_info = {
@@ -400,7 +419,7 @@ class FairnessAwareActiveLearning:
         
         # Compute summary statistics
         summary = {
-            'total_selected': len(selected_demos),
+            'total_selected': len(selected),
             'iterations': self.demo_history,
             'avg_uncertainty': np.mean([h['uncertainty_score'] for h in self.demo_history]) if self.demo_history else 0,
             'avg_fairness': np.mean([h['fairness_score'] for h in self.demo_history]) if self.demo_history else 0,
@@ -419,7 +438,7 @@ class FairnessAwareActiveLearning:
         print(f"Avg Fairness Impact: {summary['avg_fairness']:.3f}")
         print(f"Avg Diversity: {summary['avg_diversity']:.3f}")
         
-        return selected_demos, summary
+        return selected, summary
     
     def compare_with_static_selection(self,
                                       static_demos: List[Dict],

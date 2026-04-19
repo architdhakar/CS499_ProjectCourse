@@ -30,6 +30,8 @@ def prepare_data(dataset_name="adult"):
     elif dataset_name == "credit":
         from dataset import load_credit as load_dataset
         # Credit uses "sex" assuming 2 as Female (minority typically for these datasets) and 1 as Male (majority)
+    elif dataset_name == "civil":
+        from dataset import load_civil_comments as load_dataset
     else:
         raise ValueError(f"Dataset {dataset_name} is not supported or defined.")
         
@@ -62,10 +64,13 @@ def stratify_by_groups(data, label_fn, sensitive_attr_name="sex", dataset_name="
     for i, row in enumerate(data):
         # Get sensitive attribute (0=minority, 1=majority)
         if dataset_name == "adult":
-            z = 1 if row.get(sensitive_attr_name) == "Male" else 0
+            z = 1 if row.get("sex") == "Male" else 0
         elif dataset_name == "credit":
              # Assuming 1 is male, 2 is female in credit dataset 
-             z = 1 if str(row.get(sensitive_attr_name, "")) == "1" else 0
+             sex_val = str(row.get("sex", row.get("SEX", "")))
+             z = 1 if sex_val == "1" or sex_val == "1.0" else 0
+        elif dataset_name == "civil":
+             z = 1 if float(row.get("identity_attack", 0.0)) > 0.3 else 0
         else:
              z = 1 # default
         
@@ -484,7 +489,7 @@ class FCGAlgorithm:
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="FCG Algorithm Tests")
-    parser.add_argument("--dataset", type=str, default="adult", choices=["adult", "credit"], help="Dataset to use")
+    parser.add_argument("--dataset", type=str, default="adult", choices=["adult", "credit", "civil"], help="Dataset to use")
     args = parser.parse_args()
     
     dataset_to_use = args.dataset
@@ -569,7 +574,10 @@ if __name__ == "__main__":
             if dataset_to_use == "adult":
                 z = 1 if row.get("sex") == "Male" else 0
             elif dataset_to_use == "credit":
-                z = 1 if str(row.get("sex", "")) == "1" else 0
+                sex_val = 1 if row.get("sex:1", 0) == 1 else (2 if row.get("sex:2", 0) == 1 else 0)
+                z = 1 if sex_val == 1 else 0
+            elif dataset_to_use == "civil":
+                z = 1 if float(row.get("identity_attack", 0.0)) > 0.3 else 0
             else:
                 z = 1
                 

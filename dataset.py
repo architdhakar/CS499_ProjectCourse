@@ -150,3 +150,27 @@ def load_rte():
         return "Positive" if row["label"] == 1 else "Negative"
 
     return dataset["train"], dataset["validation"], formatter, label_fn
+
+
+# -----------------------------------------------------
+# 6️⃣ Toxicity Classification (Jigsaw Civil Comments)
+# -----------------------------------------------------
+def load_civil_comments():
+    try:
+        from datasets import load_dataset
+        dataset = load_dataset("civil_comments")
+        
+        train = dataset["train"].select(range(5000))
+        test = dataset["test"].select(range(1000))
+        
+        def formatter(row):
+            return f"Comment: {row['text']}\nToxic:"
+
+        def label_fn(row):
+            return "Positive" if row['toxicity'] > 0.5 else "Negative"
+
+        return train, test, formatter, label_fn
+
+    except Exception as e:
+        print(f"Failed to load civil comments dataset: {e}")
+        return [], [], lambda x: "", lambda x: "Negative"
